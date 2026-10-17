@@ -23,6 +23,7 @@ type Config struct {
 	UploadDir            string
 	MaxFileSizeMB        int64
 	AlertThresholdMonths int
+	CORSAllowOrigins     string
 }
 
 var AppConfig *Config
@@ -37,21 +38,31 @@ func LoadConfig() *Config {
 	maxSize, _ := strconv.ParseInt(getEnv("MAX_FILE_SIZE_MB", "2"), 10, 64)
 	alertMonths, _ := strconv.Atoi(getEnv("ALERT_THRESHOLD_MONTHS", "3"))
 
+	appEnv := getEnv("APP_ENV", "development")
+	dbPassword := getEnv("DB_PASSWORD", "postgres")
+	jwtSecret := getEnv("JWT_SECRET", "super_secret_sikapj_jwt_key_2026_bpkad_jember")
+	if appEnv == "production" {
+		if dbPassword == "postgres" || jwtSecret == "super_secret_sikapj_jwt_key_2026_bpkad_jember" {
+			log.Fatal("[FATAL] DB_PASSWORD dan JWT_SECRET wajib dikonfigurasi dengan nilai aman pada production")
+		}
+	}
+
 	AppConfig = &Config{
 		Port:                 getEnv("PORT", "8080"),
-		AppEnv:               getEnv("APP_ENV", "development"),
+		AppEnv:               appEnv,
 		DBHost:               getEnv("DB_HOST", "localhost"),
 		DBPort:               getEnv("DB_PORT", "5432"),
 		DBUser:               getEnv("DB_USER", "postgres"),
-		DBPassword:           getEnv("DB_PASSWORD", "postgres"),
+		DBPassword:           dbPassword,
 		DBName:               getEnv("DB_NAME", "sikap_j"),
 		DBSchema:             getEnv("DB_SCHEMA", "sikapj"),
 		DBSSLMode:            getEnv("DB_SSLMODE", "disable"),
-		JWTSecret:            getEnv("JWT_SECRET", "super_secret_sikapj_jwt_key_2026_bpkad_jember"),
+		JWTSecret:            jwtSecret,
 		JWTExpirationHours:   jwtExp,
 		UploadDir:            getEnv("UPLOAD_DIR", "storage/uploads"),
 		MaxFileSizeMB:        maxSize,
 		AlertThresholdMonths: alertMonths,
+		CORSAllowOrigins:     getEnv("CORS_ALLOW_ORIGINS", "http://localhost:5173"),
 	}
 
 	return AppConfig

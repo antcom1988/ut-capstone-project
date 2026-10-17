@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sikapj-backend/internal/audit"
 	"sikapj-backend/internal/config"
 	"sikapj-backend/internal/models"
+	"sikapj-backend/internal/validation"
 	"strconv"
 	"strings"
 	"time"
@@ -90,7 +92,7 @@ func (h *BerkasHandler) GetBerkasByNIP(c *fiber.Ctx) error {
 	if err := h.DB.Select(&list, query, nip); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"success": false,
-			"message": "Gagal mengambil daftar e-berkas pegawai: " + err.Error(),
+			"message": "Gagal mengambil daftar e-berkas pegawai",
 		})
 	}
 
@@ -108,6 +110,9 @@ func (h *BerkasHandler) UploadBerkas(c *fiber.Ctx) error {
 	nip := c.FormValue("nip")
 	if currentRole == "PEGAWAI" {
 		nip = currentNIP // Paksa pakai NIP sendiri
+	}
+	if !validation.ValidNIP(nip) {
+		return c.Status(400).JSON(fiber.Map{"success": false, "message": "NIP harus berjumlah 18 digit angka"})
 	}
 
 	dokumenIDStr := c.FormValue("dokumen_id")
@@ -162,9 +167,19 @@ func (h *BerkasHandler) UploadBerkas(c *fiber.Ctx) error {
 		})
 	}
 
+	opened, err := file.Open()
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"success": false, "message": "File tidak dapat dibaca"})
+	}
+	detectedMime, _, typeErr := validation.DetectAllowedFileType(opened, ext)
+	_ = opened.Close()
+	if typeErr != nil || detectedMime != mimeType {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"success": false, "message": "Isi file tidak sesuai dengan format PDF, JPG, atau PNG"})
+	}
+
 	// Buat direktori penyimpanan
 	destDir := filepath.Join(h.Cfg.UploadDir, "berkas", nip)
-	if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
+	if err := os.MkdirAll(destDir, 0750); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"success": false,
 			"message": "Gagal membuat direktori penyimpanan berkas",
@@ -200,11 +215,36 @@ func (h *BerkasHandler) UploadBerkas(c *fiber.Ctx) error {
 			verified_by = NULL
 	`
 
-	if _, err := h.DB.Exec(query, nip, dokumenID, savedPath, file.Filename, file.Size, mimeType); err != nil {
+	var oldPath string
+	_ = h.DB.Get(&oldPath, "SELECT file_path FROM sikapj.e_berkas WHERE nip=$1 AND dokumen_id=$2", nip, dokumenID)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(savedPath)
+		}
+	}()
+	tx, err := h.DB.Beginx()
+	if err != nil {
+		return internalError(c)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(query, nip, dokumenID, savedPath, filepath.Base(file.Filename), file.Size, mimeType); err != nil {
+		_ = os.Remove(savedPath)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"success": false,
-			"message": "Gagal menyimpan data berkas ke database: " + err.Error(),
+			"message": "Gagal menyimpan data berkas ke database",
 		})
+	}
+	actor := c.Locals("user_id").(int)
+	if err = (audit.Service{DB: tx}).Log(&actor, "UPLOAD_BERKAS", map[string]any{"nip": nip, "dokumen_id": dokumenID}, c.IP()); err != nil {
+		return internalError(c)
+	}
+	if err = tx.Commit(); err != nil {
+		return internalError(c)
+	}
+	committed = true
+	if oldPath != "" && oldPath != savedPath {
+		_ = os.Remove(oldPath)
 	}
 
 	return c.JSON(fiber.Map{
@@ -249,8 +289,9 @@ func (h *BerkasHandler) VerifikasiBerkas(c *fiber.Ctx) error {
 	adminID := c.Locals("user_id").(int)
 
 	type VerifyRequest struct {
-		StatusVerifikasi string  `json:"status_verifikasi"` // "Disetujui" / "Ditolak"
-		CatatanAdmin     *string `json:"catatan_admin"`
+		StatusVerifikasi string    `json:"status_verifikasi"` // "Disetujui" / "Ditolak"
+		CatatanAdmin     *string   `json:"catatan_admin"`
+		UploadedAt       time.Time `json:"uploaded_at"`
 	}
 
 	var req VerifyRequest
@@ -261,6 +302,9 @@ func (h *BerkasHandler) VerifikasiBerkas(c *fiber.Ctx) error {
 		})
 	}
 
+	if req.UploadedAt.IsZero() {
+		return c.Status(400).JSON(fiber.Map{"success": false, "message": "uploaded_at wajib diisi sesuai versi berkas yang ditinjau"})
+	}
 	if req.StatusVerifikasi != "Disetujui" && req.StatusVerifikasi != "Ditolak" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"success": false,
@@ -278,14 +322,26 @@ func (h *BerkasHandler) VerifikasiBerkas(c *fiber.Ctx) error {
 	query := `
 		UPDATE sikapj.e_berkas 
 		SET status_verifikasi = $1, catatan_admin = $2, verified_at = NOW(), verified_by = $3
-		WHERE id = $4
+		WHERE id = $4 AND uploaded_at = $5
 	`
-	_, err := h.DB.Exec(query, req.StatusVerifikasi, req.CatatanAdmin, adminID, berkasID)
+	tx, err := h.DB.Beginx()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"success": false,
-			"message": "Gagal memproses verifikasi berkas",
-		})
+		return internalError(c)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(query, req.StatusVerifikasi, req.CatatanAdmin, adminID, berkasID, req.UploadedAt)
+	if err != nil {
+		return internalError(c)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows != 1 {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"success": false, "message": "Berkas berubah atau tidak ditemukan; muat ulang dan tinjau versi terbaru"})
+	}
+	if _, err = tx.Exec(`INSERT INTO sikapj.audit_log(user_id,action,details,ip_address) VALUES($1,'VERIFIKASI_BERKAS',$2,$3)`, adminID, fmt.Sprintf(`{"berkas_id":%q,"status":%q}`, berkasID, req.StatusVerifikasi), c.IP()); err != nil {
+		return internalError(c)
+	}
+	if err = tx.Commit(); err != nil {
+		return internalError(c)
 	}
 
 	return c.JSON(fiber.Map{

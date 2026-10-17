@@ -2,11 +2,13 @@
 import { ref, onMounted, computed } from 'vue'
 import api from '@/api/axios'
 import type { Pegawai } from '@/types'
+import { validateContact, validateNip } from '@/utils/validation'
 
 const pegawais = ref<Pegawai[]>([])
 const searchQuery = ref('')
 const selectedBidang = ref('')
 const isLoading = ref(true)
+const loadError = ref('')
 
 // Modal State
 const isModalOpen = ref(false)
@@ -39,13 +41,14 @@ const form = ref({
 
 async function fetchPegawai() {
   isLoading.value = true
+  loadError.value = ''
   try {
     const res = await api.get('/admin/pegawai')
     if (res.data.success) {
       pegawais.value = res.data.data
     }
   } catch (err) {
-    console.error(err)
+    loadError.value = 'Gagal memuat atau memperbarui data. Silakan coba lagi.'
   } finally {
     isLoading.value = false
   }
@@ -119,7 +122,9 @@ function openEditModal(p: Pegawai) {
 }
 
 async function savePegawai() {
-  errorMessage.value = ''
+  errorMessage.value = validateNip(form.value.nip) || validateContact(form.value.email, form.value.no_hp)
+  if (!isEditMode.value && form.value.password.length < 8) errorMessage.value = 'Kata sandi awal wajib minimal 8 karakter.'
+  if (errorMessage.value) return
   isSaving.value = true
   try {
     if (isEditMode.value) {
@@ -129,7 +134,7 @@ async function savePegawai() {
         await fetchPegawai()
       }
     } else {
-      const res = await api.post('/admin/pegawai', form.value)
+      const res = await api.post('/admin/pegawai', { ...form.value, must_change_password: true })
       if (res.data.success) {
         isModalOpen.value = false
         await fetchPegawai()
@@ -154,7 +159,7 @@ async function toggleStatus(p: Pegawai) {
       p.is_active = res.data.is_active
     }
   } catch (err) {
-    console.error(err)
+    loadError.value = 'Gagal memuat atau memperbarui data. Silakan coba lagi.'
   }
 }
 
@@ -170,6 +175,8 @@ onMounted(() => {
 
 <template>
   <div class="space-y-6">
+    <p v-if="isLoading" role="status">Memuat data...</p>
+    <p v-if="loadError" role="alert" class="p-3 bg-rose-50 text-rose-700 rounded-lg">{{ loadError }}</p>
     <!-- Header Page -->
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
       <div>
@@ -356,7 +363,7 @@ onMounted(() => {
               </div>
               <div v-if="!isEditMode">
                 <label class="block font-semibold text-slate-600 mb-1">Kata Sandi Akun</label>
-                <input v-model="form.password" type="text" placeholder="Default: Pegawai123!" class="w-full p-2 border rounded-lg" />
+                <input v-model="form.password" type="password" required minlength="8" autocomplete="new-password" placeholder="Minimal 8 karakter, wajib diganti saat masuk" class="w-full p-2 border rounded-lg" />
               </div>
             </div>
           </div>
@@ -427,7 +434,7 @@ onMounted(() => {
               <div>
                 <label class="block font-semibold text-slate-600 mb-1">Jenjang</label>
                 <select v-model="form.jenjang_pendidikan" class="w-full p-2 border rounded-lg">
-                  <option value="SMA/SMK">SMA/SMK</option>
+                  <option value="SMA">SMA/SMK</option>
                   <option value="D3">D3</option>
                   <option value="S1">S1</option>
                   <option value="S2">S2</option>

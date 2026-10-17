@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import api from '@/api/axios'
 import type { Pegawai, EBerkasItem, AlertItem, RiwayatDiklat, ArsipKinerja } from '@/types'
 import DokumenViewerModal from '@/components/DokumenViewerModal.vue'
+import { MAX_KINERJA_YEAR, validateKinerjaYear, validateContact, validateDateRange, validateFile } from '@/utils/validation'
 
 const profile = ref<Pegawai | null>(null)
 const berkasList = ref<EBerkasItem[]>([])
@@ -12,6 +13,11 @@ const kinerjaList = ref<ArsipKinerja[]>([])
 const kelengkapan = ref(0)
 const activeTab = ref<'berkas' | 'diklat' | 'kinerja'>('berkas')
 const isLoading = ref(true)
+const loadError = ref('')
+const isContactModalOpen = ref(false)
+const isSavingContact = ref(false)
+const contactError = ref('')
+const contactForm = ref({ email: '', no_hp: '' })
 
 // Upload Berkas State
 const uploadModalOpen = ref(false)
@@ -51,23 +57,27 @@ const previewFileName = ref('')
 
 async function fetchPortalData() {
   isLoading.value = true
+  loadError.value = ''
   try {
     const res = await api.get('/pegawai/me/dashboard')
-    if (res.data.success) {
-      profile.value = res.data.data.pegawai
-      kelengkapan.value = res.data.data.kelengkapan_berkas
-      alerts.value = res.data.data.alerts
+    if (!res.data.success) throw new Error('Data dashboard tidak tersedia')
+    profile.value = res.data.data.pegawai
+    kelengkapan.value = res.data.data.kelengkapan_berkas
+    alerts.value = res.data.data.alerts
+    isLoading.value = false
 
-      if (profile.value?.nip) {
-        await Promise.all([
-          fetchBerkas(profile.value.nip),
-          fetchDiklat(profile.value.nip),
-          fetchKinerja(profile.value.nip),
-        ])
+    if (profile.value?.nip) {
+      const results = await Promise.allSettled([
+        fetchBerkas(profile.value.nip),
+        fetchDiklat(profile.value.nip),
+        fetchKinerja(profile.value.nip),
+      ])
+      if (results.some(result => result.status === 'rejected')) {
+        loadError.value = 'Sebagian data belum dapat dimuat. Silakan coba lagi.'
       }
     }
   } catch (err) {
-    console.error(err)
+    loadError.value = 'Gagal memuat atau memperbarui data. Silakan coba lagi.'
   } finally {
     isLoading.value = false
   }
@@ -75,17 +85,43 @@ async function fetchPortalData() {
 
 async function fetchBerkas(nip: string) {
   const res = await api.get(`/berkas/${nip}`)
-  if (res.data.success) berkasList.value = res.data.data
+  if (res.data.success) berkasList.value = res.data.data || []
 }
 
 async function fetchDiklat(nip: string) {
   const res = await api.get(`/diklat/${nip}`)
-  if (res.data.success) diklatList.value = res.data.data
+  if (res.data.success) diklatList.value = res.data.data || []
 }
 
 async function fetchKinerja(nip: string) {
   const res = await api.get(`/kinerja/${nip}`)
-  if (res.data.success) kinerjaList.value = res.data.data
+  if (res.data.success) kinerjaList.value = res.data.data || []
+}
+
+function openContactModal() {
+  contactError.value = ''
+  contactForm.value = { email: profile.value?.email || '', no_hp: profile.value?.no_hp || '' }
+  isContactModalOpen.value = true
+}
+
+async function saveContact() {
+  contactError.value = validateContact(contactForm.value.email, contactForm.value.no_hp)
+  if (contactError.value) return
+  isSavingContact.value = true
+  try {
+    const res = await api.put('/pegawai/me/contact', contactForm.value)
+    if (res.data.success) {
+      if (profile.value) {
+        profile.value.email = contactForm.value.email
+        profile.value.no_hp = contactForm.value.no_hp
+      }
+      isContactModalOpen.value = false
+    }
+  } catch (err: any) {
+    contactError.value = err.response?.data?.message || 'Gagal memperbarui kontak'
+  } finally {
+    isSavingContact.value = false
+  }
 }
 
 // Handler Upload Berkas (FR-03)
@@ -103,7 +139,8 @@ function onFileChange(e: Event) {
 
 async function submitUpload() {
   if (!selectedDoc.value || !selectedFile.value) return
-  uploadError.value = ''
+  uploadError.value = validateFile(selectedFile.value, selectedDoc.value.max_size_mb)
+  if (uploadError.value) return
   isUploading.value = true
 
   const formData = new FormData()
@@ -111,12 +148,10 @@ async function submitUpload() {
   formData.append('file', selectedFile.value)
 
   try {
-    const res = await api.post('/berkas/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const res = await api.post('/berkas/upload', formData)
     if (res.data.success) {
       uploadModalOpen.value = false
-      if (profile.value?.nip) await fetchBerkas(profile.value.nip)
+      await fetchPortalData()
     }
   } catch (err: any) {
     uploadError.value = err.response?.data?.message || 'Gagal mengunggah file'
@@ -126,7 +161,22 @@ async function submitUpload() {
 }
 
 // Handler Diklat (FR-08)
+const editingDiklat = ref<RiwayatDiklat | null>(null)
+const deletingDiklat = ref<number | null>(null)
+function openEditDiklat(d: RiwayatDiklat) {
+ openAddDiklatModal()
+ editingDiklat.value = d
+ diklatForm.value = { nama_diklat: d.nama_diklat, penyelenggara: d.penyelenggara, jumlah_jp: d.jumlah_jp, tanggal_mulai: d.tanggal_mulai.substring(0,10), tanggal_selesai: d.tanggal_selesai.substring(0,10) }
+}
+async function deleteDiklat(d: RiwayatDiklat) {
+ if (!confirm(`Hapus riwayat diklat "${d.nama_diklat}" beserta sertifikatnya?`)) return
+ deletingDiklat.value = d.id; loadError.value = ''
+ try { await api.delete(`/diklat/${d.id}`); if (profile.value?.nip) await fetchDiklat(profile.value.nip) }
+ catch (e: any) { loadError.value = e.response?.data?.message || 'Gagal menghapus diklat.' }
+ finally { deletingDiklat.value = null }
+}
 function openAddDiklatModal() {
+  editingDiklat.value = null
   diklatError.value = ''
   diklatForm.value = {
     nama_diklat: '',
@@ -145,7 +195,8 @@ function onDiklatFileChange(e: Event) {
 }
 
 async function submitDiklat() {
-  diklatError.value = ''
+  diklatError.value = validateDateRange(diklatForm.value.tanggal_mulai, diklatForm.value.tanggal_selesai) || (diklatFile.value ? validateFile(diklatFile.value, 2) : editingDiklat.value?.file_name ? '' : 'Sertifikat wajib diunggah (maks 2 MB).')
+  if (diklatError.value) return
   isSavingDiklat.value = true
   const formData = new FormData()
   formData.append('nama_diklat', diklatForm.value.nama_diklat)
@@ -158,9 +209,7 @@ async function submitDiklat() {
   }
 
   try {
-    const res = await api.post('/diklat', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const res = editingDiklat.value ? await api.put(`/diklat/${editingDiklat.value.id}`, formData) : await api.post('/diklat', formData)
     if (res.data.success) {
       isDiklatModalOpen.value = false
       if (profile.value?.nip) await fetchDiklat(profile.value.nip)
@@ -190,7 +239,8 @@ function onKinerjaFileChange(e: Event) {
 
 async function submitKinerja() {
   if (!kinerjaFile.value) return
-  kinerjaError.value = ''
+  kinerjaError.value = validateKinerjaYear(kinerjaForm.value.tahun_periode) || validateFile(kinerjaFile.value, 1)
+  if (kinerjaError.value) return
   isSavingKinerja.value = true
 
   const formData = new FormData()
@@ -199,9 +249,7 @@ async function submitKinerja() {
   formData.append('file', kinerjaFile.value)
 
   try {
-    const res = await api.post('/kinerja/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const res = await api.post('/kinerja/upload', formData)
     if (res.data.success) {
       isKinerjaModalOpen.value = false
       if (profile.value?.nip) await fetchKinerja(profile.value.nip)
@@ -216,26 +264,23 @@ async function submitKinerja() {
 // Previews
 function openPreview(item: EBerkasItem) {
   if (!item.berkas_id) return
-  const token = localStorage.getItem('sikapj_token') || ''
   previewTitle.value = item.nama_dokumen
   previewFileName.value = item.file_name || ''
-  previewUrl.value = `/api/berkas/preview/${item.berkas_id}?token=${token}`
+  previewUrl.value = `/api/berkas/preview/${item.berkas_id}`
   previewModalOpen.value = true
 }
 
 function openDiklatPreview(d: RiwayatDiklat) {
-  const token = localStorage.getItem('sikapj_token') || ''
   previewTitle.value = `Sertifikat: ${d.nama_diklat}`
   previewFileName.value = d.file_name || ''
-  previewUrl.value = `/api/diklat/preview/${d.id}?token=${token}`
+  previewUrl.value = `/api/diklat/preview/${d.id}`
   previewModalOpen.value = true
 }
 
 function openKinerjaPreview(k: ArsipKinerja) {
-  const token = localStorage.getItem('sikapj_token') || ''
   previewTitle.value = `${k.jenis_dokumen} Tahun ${k.tahun_periode}`
   previewFileName.value = k.file_name || ''
-  previewUrl.value = `/api/kinerja/preview/${k.id}?token=${token}`
+  previewUrl.value = `/api/kinerja/preview/${k.id}`
   previewModalOpen.value = true
 }
 
@@ -251,6 +296,8 @@ onMounted(() => {
 
 <template>
   <div class="space-y-6">
+    <p v-if="isLoading" role="status">Memuat data...</p>
+    <p v-if="loadError" role="alert" class="p-3 bg-rose-50 text-rose-700 rounded-lg">{{ loadError }}</p>
     <!-- Header Pegawai -->
     <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
       <div class="flex items-center gap-4">
@@ -265,7 +312,10 @@ onMounted(() => {
       </div>
 
       <!-- Kartu Ringkasan Cepat -->
-      <div class="flex gap-4">
+      <div class="flex gap-4 items-center">
+        <button type="button" @click.stop="openContactModal" class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700">
+          Edit Kontak
+        </button>
         <div class="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-center">
           <div class="text-[11px] text-slate-500 uppercase font-semibold">Kelengkapan Berkas</div>
           <div class="text-xl font-bold text-primary-600">{{ kelengkapan.toFixed(0) }}%</div>
@@ -273,6 +323,41 @@ onMounted(() => {
       </div>
     </div>
 
+    <div v-if="isContactModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <form @submit.prevent="saveContact" class="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 space-y-4">
+        <div class="flex items-center justify-between border-b pb-3">
+          <h3 class="font-bold text-slate-800">Perbarui Informasi Kontak</h3>
+          <button type="button" @click="isContactModalOpen = false" class="text-slate-400">✕</button>
+        </div>
+        <p v-if="contactError" class="text-xs text-rose-700 bg-rose-50 p-2 rounded">{{ contactError }}</p>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Email</label>
+          <input v-model.trim="contactForm.email" type="email" class="w-full p-2.5 border border-slate-300 rounded-lg" />
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Nomor HP/WhatsApp</label>
+          <input v-model.trim="contactForm.no_hp" type="tel" class="w-full p-2.5 border border-slate-300 rounded-lg" />
+        </div>
+        <div class="flex justify-end gap-2">
+          <button type="button" @click="isContactModalOpen = false" class="px-4 py-2 bg-slate-100 rounded-lg text-xs font-semibold">Batal</button>
+          <button type="submit" :disabled="isSavingContact" class="px-4 py-2 bg-primary-600 text-white rounded-lg text-xs font-semibold disabled:opacity-50">{{ isSavingContact ? 'Menyimpan...' : 'Simpan' }}</button>
+        </div>
+      </form>
+    </div>
+
+    <section v-if="profile" class="bg-white rounded-xl border p-5">
+      <h2 class="font-bold mb-3">Identitas &amp; Kepegawaian</h2>
+      <dl class="grid sm:grid-cols-2 gap-3 text-sm">
+        <div><dt>Tempat / Tanggal Lahir</dt><dd>{{ profile.tempat_lahir || '-' }} / {{ formatDate(profile.tanggal_lahir || '') }}</dd></div>
+        <div><dt>Jenis Kelamin</dt><dd>{{ profile.jenis_kelamin === 'L' ? 'Laki-laki' : profile.jenis_kelamin === 'P' ? 'Perempuan' : '-' }}</dd></div>
+        <div><dt>Email / No. HP</dt><dd>{{ profile.email || '-' }} / {{ profile.no_hp || '-' }}</dd></div>
+        <div><dt>Status / Jenis Jabatan</dt><dd>{{ profile.status_pegawai }} / {{ profile.jenis_jabatan }}</dd></div>
+        <div><dt>Pendidikan</dt><dd>{{ profile.jenjang_pendidikan || '-' }} – {{ profile.jurusan || '-' }} – {{ profile.institusi_pendidikan || '-' }}</dd></div>
+        <div><dt>TMT Pengangkatan</dt><dd>{{ formatDate(profile.tmt_pengangkatan) }}</dd></div>
+        <div><dt>TMT Pangkat Terakhir</dt><dd>{{ formatDate(profile.tmt_pangkat_terakhir) }}</dd></div>
+        <div><dt>TMT KGB Terakhir</dt><dd>{{ formatDate(profile.tmt_kgb_terakhir) }}</dd></div>
+      </dl>
+    </section>
     <!-- Alert Notifikasi Mandiri (KGB/KP) -->
     <div v-for="a in alerts" :key="a.tipe_alert" class="space-y-2">
       <div
@@ -288,7 +373,9 @@ onMounted(() => {
             </div>
             <div class="text-xs">
               Jatuh tempo pada <b>{{ formatDate(a.tanggal_jatuh_tempo) }}</b>
-              <span v-if="a.status === 'SEGERA'"> (Segera dalam {{ a.sisa_hari }} hari lagi)</span>
+              <span v-if="a.sisa_hari < 0"> (Terlambat {{ Math.abs(a.sisa_hari) }} hari)</span>
+              <span v-else-if="a.sisa_hari === 0"> (Jatuh tempo hari ini)</span>
+              <span v-else-if="a.status === 'SEGERA'"> (Segera dalam {{ a.sisa_hari }} hari lagi)</span>
               <span v-else> (Estimasi {{ a.sisa_bulan.toFixed(1) }} bulan lagi)</span>.
             </div>
           </div>
@@ -381,8 +468,7 @@ onMounted(() => {
             >
               👁️ Lihat Berkas
             </button>
-            <button
-              @click="openUploadModal(doc)"
+            <button type="button" @click.stop="openUploadModal(doc)"
               class="flex-1 py-1.5 px-3 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-xs font-semibold transition-colors text-center"
             >
               {{ doc.berkas_id ? 'Unggah Ulang' : 'Unggah File' }}
@@ -427,6 +513,7 @@ onMounted(() => {
                 {{ formatDate(d.tanggal_mulai) }} s.d. {{ formatDate(d.tanggal_selesai) }}
               </td>
               <td class="px-5 py-3.5 text-right">
+                <button @click="openEditDiklat(d)" class="mr-2 text-primary-700">Edit</button><button @click="deleteDiklat(d)" :disabled="deletingDiklat !== null" class="mr-2 text-rose-700">Hapus</button>
                 <button
                   v-if="d.file_name"
                   @click="openDiklatPreview(d)"
@@ -511,7 +598,7 @@ onMounted(() => {
     <!-- MODAL TAMBAH DIKLAT (FR-08) -->
     <div v-if="isDiklatModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div class="bg-white rounded-xl shadow-xl max-w-lg w-full p-6 space-y-4">
-        <h3 class="text-base font-bold text-slate-800">Tambah Rekam Jejak Diklat</h3>
+        <h3 class="text-base font-bold text-slate-800">{{ editingDiklat ? 'Edit Rekam Jejak Diklat' : 'Tambah Rekam Jejak Diklat' }}</h3>
         <div v-if="diklatError" class="p-2.5 rounded bg-rose-50 text-rose-700 text-xs">{{ diklatError }}</div>
         <form @submit.prevent="submitDiklat" class="space-y-3 text-xs">
           <div>
@@ -537,8 +624,9 @@ onMounted(() => {
             </div>
           </div>
           <div>
-            <label class="block font-semibold text-slate-600 mb-1">File Sertifikat (PDF / JPG / PNG)</label>
-            <input type="file" accept=".pdf,.jpg,.jpeg,.png" @change="onDiklatFileChange" class="w-full p-2 border rounded-lg text-slate-500" />
+            <label class="block font-semibold text-slate-600 mb-1">File Sertifikat (PDF / JPG / PNG, maks 2 MB)</label>
+            <p v-if="editingDiklat?.file_name" class="text-slate-500 mb-2">Sertifikat saat ini: {{ editingDiklat.file_name }}. Kosongkan untuk mempertahankan.</p>
+            <input type="file" accept=".pdf,.jpg,.jpeg,.png" :required="!editingDiklat?.file_name" @change="onDiklatFileChange" class="w-full p-2 border rounded-lg text-slate-500" />
           </div>
           <div class="flex justify-end gap-2 pt-2 border-t">
             <button type="button" @click="isDiklatModalOpen = false" class="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg font-semibold">Batal</button>
@@ -566,12 +654,12 @@ onMounted(() => {
             </div>
             <div>
               <label class="block font-semibold text-slate-600 mb-1">Tahun Periode *</label>
-              <input v-model.number="kinerjaForm.tahun_periode" type="number" min="2000" class="w-full p-2 border rounded-lg font-mono" />
+              <input v-model.number="kinerjaForm.tahun_periode" type="number" required min="2000" :max="MAX_KINERJA_YEAR" class="w-full p-2 border rounded-lg font-mono" />
             </div>
           </div>
           <div>
-            <label class="block font-semibold text-slate-600 mb-1">File Dokumen PDF (Maks 2 MB) *</label>
-            <input type="file" accept=".pdf" required @change="onKinerjaFileChange" class="w-full p-2 border rounded-lg text-slate-500" />
+            <label class="block font-semibold text-slate-600 mb-1">File Dokumen PDF / JPG / PNG (Maks 1 MB) *</label>
+            <input type="file" accept=".pdf,.jpg,.jpeg,.png" required @change="onKinerjaFileChange" class="w-full p-2 border rounded-lg text-slate-500" />
           </div>
           <div class="flex justify-end gap-2 pt-2 border-t">
             <button type="button" @click="isKinerjaModalOpen = false" class="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg font-semibold">Batal</button>

@@ -4,10 +4,12 @@ import api from '@/api/axios'
 import { useAuthStore } from '@/stores/auth'
 import type { RiwayatDiklat } from '@/types'
 import DokumenViewerModal from '@/components/DokumenViewerModal.vue'
+import { validateDateRange, validateFile } from '@/utils/validation'
 
 const authStore = useAuthStore()
 const diklatList = ref<RiwayatDiklat[]>([])
 const isLoading = ref(true)
+const loadError = ref('')
 
 // Modal Tambah Diklat
 const isModalOpen = ref(false)
@@ -30,19 +32,35 @@ const previewFileName = ref('')
 
 async function fetchDiklat() {
   isLoading.value = true
+  loadError.value = ''
   try {
     const nip = authStore.user?.nip
     if (!nip) return
     const res = await api.get(`/diklat/${nip}`)
     if (res.data.success) diklatList.value = res.data.data
   } catch (err) {
-    console.error(err)
+    loadError.value = 'Gagal memuat atau memperbarui data. Silakan coba lagi.'
   } finally {
     isLoading.value = false
   }
 }
 
+const editingDiklat = ref<RiwayatDiklat | null>(null)
+const deletingDiklat = ref<number | null>(null)
+function openEditDiklat(d: RiwayatDiklat) {
+ openModal()
+ editingDiklat.value = d
+ form.value = { nama_diklat: d.nama_diklat, penyelenggara: d.penyelenggara, jumlah_jp: d.jumlah_jp, tanggal_mulai: d.tanggal_mulai.substring(0,10), tanggal_selesai: d.tanggal_selesai.substring(0,10) }
+}
+async function deleteDiklat(d: RiwayatDiklat) {
+ if (!confirm(`Hapus riwayat diklat "${d.nama_diklat}" beserta sertifikatnya?`)) return
+ deletingDiklat.value = d.id; loadError.value = ''
+ try { await api.delete(`/diklat/${d.id}`); await fetchDiklat() }
+ catch (e: any) { loadError.value = e.response?.data?.message || 'Gagal menghapus diklat.' }
+ finally { deletingDiklat.value = null }
+}
 function openModal() {
+  editingDiklat.value = null
   errorMessage.value = ''
   form.value = { nama_diklat: '', penyelenggara: '', jumlah_jp: 30, tanggal_mulai: '', tanggal_selesai: '' }
   sertifikatFile.value = null
@@ -55,7 +73,8 @@ function onFileChange(e: Event) {
 }
 
 async function submitDiklat() {
-  errorMessage.value = ''
+  errorMessage.value = validateDateRange(form.value.tanggal_mulai, form.value.tanggal_selesai) || (sertifikatFile.value ? validateFile(sertifikatFile.value, 2) : editingDiklat.value?.file_name ? '' : 'Sertifikat wajib diunggah (maks 2 MB).')
+  if (errorMessage.value) return
   isSaving.value = true
 
   const formData = new FormData()
@@ -69,9 +88,7 @@ async function submitDiklat() {
   }
 
   try {
-    const res = await api.post('/diklat', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const res = editingDiklat.value ? await api.put(`/diklat/${editingDiklat.value.id}`, formData) : await api.post('/diklat', formData)
     if (res.data.success) {
       isModalOpen.value = false
       await fetchDiklat()
@@ -84,10 +101,9 @@ async function submitDiklat() {
 }
 
 function openPreview(d: RiwayatDiklat) {
-  const token = localStorage.getItem('sikapj_token') || ''
   previewTitle.value = `Sertifikat: ${d.nama_diklat}`
   previewFileName.value = d.file_name || ''
-  previewUrl.value = `/api/diklat/preview/${d.id}?token=${token}`
+  previewUrl.value = `/api/diklat/preview/${d.id}`
   previewModalOpen.value = true
 }
 
@@ -101,6 +117,8 @@ onMounted(fetchDiklat)
 
 <template>
   <div class="space-y-6">
+    <p v-if="isLoading" role="status">Memuat data...</p>
+    <p v-if="loadError" role="alert" class="p-3 bg-rose-50 text-rose-700 rounded-lg">{{ loadError }}</p>
     <!-- Header -->
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
       <div>
@@ -137,6 +155,7 @@ onMounted(fetchDiklat)
                 {{ formatDate(d.tanggal_mulai) }} – {{ formatDate(d.tanggal_selesai) }}
               </td>
               <td class="px-6 py-4 text-right">
+                <button @click="openEditDiklat(d)" class="mr-2 text-primary-700">Edit</button><button @click="deleteDiklat(d)" :disabled="deletingDiklat !== null" class="mr-2 text-rose-700">Hapus</button>
                 <button
                   v-if="d.file_name"
                   @click="openPreview(d)"
@@ -162,7 +181,7 @@ onMounted(fetchDiklat)
     <div v-if="isModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 space-y-4">
         <div class="flex items-center justify-between border-b pb-3">
-          <h3 class="text-base font-bold text-slate-800">Tambah Rekaman Diklat</h3>
+          <h3 class="text-base font-bold text-slate-800">{{ editingDiklat ? 'Edit Rekaman Diklat' : 'Tambah Rekaman Diklat' }}</h3>
           <button @click="isModalOpen = false" class="text-slate-400 hover:text-slate-600 text-lg">✕</button>
         </div>
 
@@ -205,9 +224,10 @@ onMounted(fetchDiklat)
             </div>
           </div>
           <div>
-            <label class="block font-semibold text-slate-600 mb-1">File Sertifikat (PDF / JPG / PNG)</label>
+            <label class="block font-semibold text-slate-600 mb-1">File Sertifikat (PDF / JPG / PNG, maks 2 MB)</label>
+            <p v-if="editingDiklat?.file_name" class="text-slate-500 mb-2">Sertifikat saat ini: {{ editingDiklat.file_name }}. Kosongkan untuk mempertahankan.</p>
             <div class="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:border-primary-300 transition-colors">
-              <input type="file" accept=".pdf,.jpg,.jpeg,.png" @change="onFileChange" class="text-xs text-slate-500" />
+              <input type="file" accept=".pdf,.jpg,.jpeg,.png" :required="!editingDiklat?.file_name" @change="onFileChange" class="text-xs text-slate-500" />
             </div>
           </div>
           <div class="flex justify-end gap-2 pt-2 border-t">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import api from '@/api/axios'
@@ -11,6 +11,7 @@ const username = ref('')
 const password = ref('')
 const errorMessage = ref('')
 const isLoading = ref(false)
+onMounted(() => { const notice = sessionStorage.getItem('sikapj_notice'); if (notice) { errorMessage.value = notice; sessionStorage.removeItem('sikapj_notice') } })
 
 async function handleLogin() {
   errorMessage.value = ''
@@ -23,10 +24,12 @@ async function handleLogin() {
 
     if (res.data.success) {
       authStore.setAuth(res.data.data.token, res.data.data.user)
-      if (res.data.data.user.role === 'ADMIN') {
-        router.push('/admin/dashboard')
+      if (res.data.data.user.must_change_password) {
+        router.push('/change-password')
+      } else if (res.data.data.user.role === 'ADMIN') {
+        router.push(typeof router.currentRoute.value.query.redirect === 'string' ? router.currentRoute.value.query.redirect : '/admin/dashboard')
       } else {
-        router.push('/pegawai/dashboard')
+        router.push(typeof router.currentRoute.value.query.redirect === 'string' ? router.currentRoute.value.query.redirect : '/pegawai/dashboard')
       }
     }
   } catch (err: any) {
@@ -105,14 +108,6 @@ async function handleLogin() {
         </button>
       </form>
 
-      <!-- Petunjuk Akun Uji Coba -->
-      <div class="mt-6 pt-5 border-t border-slate-100 text-center">
-        <p class="text-xs text-slate-400">Akun pengujian bawaan:</p>
-        <div class="mt-1.5 flex justify-center gap-4 text-xs font-mono text-slate-500">
-          <span>Admin: <b>admin_umpeg</b></span>
-          <span>Pegawai: <b>198507152010011012</b></span>
-        </div>
-      </div>
     </div>
   </div>
 </template>

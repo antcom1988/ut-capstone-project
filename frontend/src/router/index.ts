@@ -1,98 +1,20 @@
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { createRouter,createWebHistory,type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import LoginView from '@/views/LoginView.vue'
-import AppLayout from '@/layouts/AppLayout.vue'
-import DashboardView from '@/views/admin/DashboardView.vue'
-import BerkasAdminView from '@/views/admin/BerkasAdminView.vue'
-import MasterPegawaiView from '@/views/admin/MasterPegawaiView.vue'
-import PegawaiDashboardView from '@/views/pegawai/PegawaiDashboardView.vue'
-import DiklatView from '@/views/pegawai/DiklatView.vue'
-import KinerjaView from '@/views/pegawai/KinerjaView.vue'
-
-const routes: RouteRecordRaw[] = [
-  {
-    path: '/login',
-    name: 'login',
-    component: LoginView,
-    meta: { guestOnly: true },
-  },
-  {
-    path: '/',
-    component: AppLayout,
-    meta: { requiresAuth: true },
-    children: [
-      {
-        path: '',
-        redirect: () => {
-          const auth = useAuthStore()
-          return auth.isAdmin ? '/admin/dashboard' : '/pegawai/dashboard'
-        },
-      },
-      // Admin Routes
-      {
-        path: 'admin/dashboard',
-        name: 'admin-dashboard',
-        component: DashboardView,
-        meta: { role: 'ADMIN' },
-      },
-      {
-        path: 'admin/berkas',
-        name: 'admin-berkas',
-        component: BerkasAdminView,
-        meta: { role: 'ADMIN' },
-      },
-      {
-        path: 'admin/pegawai',
-        name: 'admin-pegawai',
-        component: MasterPegawaiView,
-        meta: { role: 'ADMIN' },
-      },
-      // Pegawai Routes
-      {
-        path: 'pegawai/dashboard',
-        name: 'pegawai-dashboard',
-        component: PegawaiDashboardView,
-        meta: { role: 'PEGAWAI' },
-      },
-      {
-        path: 'pegawai/diklat',
-        name: 'pegawai-diklat',
-        component: DiklatView,
-        meta: { role: 'PEGAWAI' },
-      },
-      {
-        path: 'pegawai/kinerja',
-        name: 'pegawai-kinerja',
-        component: KinerjaView,
-        meta: { role: 'PEGAWAI' },
-      },
-    ],
-  },
+const routes:RouteRecordRaw[]=[
+ {path:'/change-password',name:'change-password',component:()=>import('@/views/ChangePasswordView.vue'),meta:{requiresAuth:true}},
+ {path:'/login',name:'login',component:()=>import('@/views/LoginView.vue'),meta:{guestOnly:true}},
+ {path:'/',component:()=>import('@/layouts/AppLayout.vue'),meta:{requiresAuth:true},children:[
+  {path:'',redirect:()=>useAuthStore().isAdmin?'/admin/dashboard':'/pegawai/dashboard'},
+  {path:'admin/dashboard',name:'admin-dashboard',component:()=>import('@/views/admin/DashboardView.vue'),meta:{role:'ADMIN'}},
+  {path:'admin/berkas',name:'admin-berkas',component:()=>import('@/views/admin/BerkasAdminView.vue'),meta:{role:'ADMIN'}},
+  {path:'admin/pegawai',name:'admin-pegawai',component:()=>import('@/views/admin/MasterPegawaiView.vue'),meta:{role:'ADMIN'}},
+  {path:'admin/laporan',name:'admin-laporan',component:()=>import('@/views/admin/ReportsView.vue'),meta:{role:'ADMIN'}},
+  {path:'admin/audit-log',name:'admin-audit',component:()=>import('@/views/admin/AuditLogView.vue'),meta:{role:'ADMIN'}},
+  {path:'pegawai/dashboard',name:'pegawai-dashboard',component:()=>import('@/views/pegawai/PegawaiDashboardView.vue'),meta:{role:'PEGAWAI'}},
+  {path:'pegawai/diklat',name:'pegawai-diklat',component:()=>import('@/views/pegawai/DiklatView.vue'),meta:{role:'PEGAWAI'}},
+  {path:'pegawai/kinerja',name:'pegawai-kinerja',component:()=>import('@/views/pegawai/KinerjaView.vue'),meta:{role:'PEGAWAI'}}]},
+ {path:'/:pathMatch(.*)*',name:'not-found',component:()=>import('@/views/NotFoundView.vue')}
 ]
-
-const router = createRouter({
-  history: createWebHistory(),
-  routes,
-})
-
-router.beforeEach((to, from, next) => {
-  const authStore = useAuthStore()
-
-  if (to.meta.requiresAuth && !authStore.isAuthenticated) {
-    return next({ name: 'login' })
-  }
-
-  if (to.meta.guestOnly && authStore.isAuthenticated) {
-    if (authStore.isAdmin) return next({ name: 'admin-dashboard' })
-    return next({ name: 'pegawai-dashboard' })
-  }
-
-  if (to.meta.role && authStore.user?.role !== to.meta.role) {
-    if (authStore.isAdmin) return next({ name: 'admin-dashboard' })
-    return next({ name: 'pegawai-dashboard' })
-  }
-
-  next()
-})
-
+const router=createRouter({history:createWebHistory(),routes,scrollBehavior:()=>({top:0})})
+router.beforeEach(async to=>{const auth=useAuthStore();await auth.bootstrap();if(to.meta.requiresAuth&&!auth.isAuthenticated)return{name:'login',query:{redirect:to.fullPath}};if(auth.isAuthenticated&&auth.user?.must_change_password&&to.name!=='change-password')return{name:'change-password'};if(to.meta.guestOnly&&auth.isAuthenticated)return{name:auth.isAdmin?'admin-dashboard':'pegawai-dashboard'};if(to.meta.role&&auth.user?.role!==to.meta.role)return{name:auth.isAdmin?'admin-dashboard':'pegawai-dashboard'};})
 export default router

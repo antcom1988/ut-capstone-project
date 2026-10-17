@@ -3,6 +3,7 @@ export interface User {
   username: string
   role: 'ADMIN' | 'PEGAWAI'
   nip?: string
+  must_change_password?: boolean
 }
 
 export interface Pegawai {
@@ -71,6 +72,7 @@ export interface DashboardSummary {
   menunggu_verifikasi: number
   alert_mendekati: number
   alerts: AlertItem[]
+  threshold_months?: number
 }
 
 export interface ArsipKinerja {
@@ -80,6 +82,15 @@ export interface ArsipKinerja {
   jenis_dokumen: 'PK' | 'SKP'
   file_name: string
   uploaded_at: string
+}
+
+export interface AuditLog {
+  id: number
+  username?: string
+  action: string
+  details?: string
+  ip_address?: string
+  created_at: string
 }
 
 export interface RiwayatDiklat {

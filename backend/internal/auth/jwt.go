@@ -10,6 +10,7 @@ import (
 )
 
 type JWTClaims struct {
+ SessionVersion int `json:"session_version"`
 	UserID   int    `json:"user_id"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
@@ -30,7 +31,7 @@ func CheckPasswordHash(password, hash string) bool {
 }
 
 // GenerateJWTToken membuat token JWT baru
-func GenerateJWTToken(userID int, username, role, nip string, cfg *config.Config) (string, error) {
+func GenerateJWTToken(userID int, username, role, nip string, cfg *config.Config, sessionVersion ...int) (string, error) {
 	expirationTime := time.Now().Add(time.Duration(cfg.JWTExpirationHours) * time.Hour)
 	claims := &JWTClaims{
 		UserID:   userID,
@@ -44,7 +45,8 @@ func GenerateJWTToken(userID int, username, role, nip string, cfg *config.Config
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	if len(sessionVersion)>0 { claims.SessionVersion=sessionVersion[0] }
+ token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(cfg.JWTSecret))
 }
 
@@ -52,8 +54,11 @@ func GenerateJWTToken(userID int, username, role, nip string, cfg *config.Config
 func ValidateJWTToken(tokenString string, cfg *config.Config) (*JWTClaims, error) {
 	claims := &JWTClaims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, errors.New("metode tanda tangan token tidak valid")
+		}
 		return []byte(cfg.JWTSecret), nil
-	})
+	}, jwt.WithIssuer("sikapj-system"), jwt.WithExpirationRequired(), jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 
 	if err != nil {
 		return nil, err

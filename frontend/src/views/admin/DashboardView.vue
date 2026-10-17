@@ -1,22 +1,26 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import api from '@/api/axios'
-import type { DashboardSummary, AlertItem } from '@/types'
+import type { DashboardSummary } from '@/types'
 
 const summary = ref<DashboardSummary | null>(null)
 const thresholdMonths = ref(3)
 const isUpdatingThreshold = ref(false)
 const isLoading = ref(true)
+const loadError = ref('')
+const feedback = ref('')
 
 async function fetchDashboard() {
   isLoading.value = true
+  loadError.value = ''
   try {
     const res = await api.get('/admin/dashboard')
     if (res.data.success) {
       summary.value = res.data.data
+      thresholdMonths.value = res.data.data.threshold_months ?? thresholdMonths.value
     }
   } catch (err) {
-    console.error(err)
+    loadError.value = 'Gagal memuat atau memperbarui data. Silakan coba lagi.'
   } finally {
     isLoading.value = false
   }
@@ -29,8 +33,9 @@ async function updateThreshold() {
       threshold_months: thresholdMonths.value,
     })
     await fetchDashboard()
-  } catch (err) {
-    console.error(err)
+    feedback.value = 'Ambang peringatan berhasil diperbarui.'
+  } catch (err: any) {
+    feedback.value = err.response?.data?.message || 'Gagal memperbarui ambang peringatan.'
   } finally {
     isUpdatingThreshold.value = false
   }
@@ -49,6 +54,8 @@ onMounted(() => {
 
 <template>
   <div class="space-y-6">
+    <p v-if="isLoading" role="status">Memuat data...</p>
+    <p v-if="loadError" role="alert" class="p-3 bg-rose-50 text-rose-700 rounded-lg">{{ loadError }}</p>
     <!-- Header -->
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
       <div>
@@ -72,6 +79,8 @@ onMounted(() => {
         </select>
       </div>
     </div>
+
+    <p v-if="feedback" role="status" class="p-3 rounded-lg bg-slate-50 border text-sm text-slate-700">{{ feedback }}</p>
 
     <!-- Metrik Utama (KPI Cards) -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -174,7 +183,7 @@ onMounted(() => {
                   class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-100 text-rose-800"
                 >
                   <span class="w-2 h-2 rounded-full bg-rose-600 animate-pulse"></span>
-                  Segera ({{ item.sisa_hari }} hari)
+                  {{ item.sisa_hari < 0 ? `Terlambat ${Math.abs(item.sisa_hari)} hari` : item.sisa_hari === 0 ? 'Jatuh tempo hari ini' : `Segera (${item.sisa_hari} hari)` }}
                 </span>
                 <span
                   v-else-if="item.status === 'DIINGATKAN'"

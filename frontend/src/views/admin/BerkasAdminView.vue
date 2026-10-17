@@ -11,7 +11,26 @@ const diklatList = ref<RiwayatDiklat[]>([])
 const kinerjaList = ref<ArsipKinerja[]>([])
 const adminTab = ref<'berkas' | 'diklat' | 'kinerja'>('berkas')
 const isLoading = ref(true)
+const loadError = ref('')
+const isDetailLoading = ref(false)
+const detailError = ref('')
+let selectionRequestId = 0
 
+interface PendingItem { id: number; nip: string; nama_lengkap: string; nama_dokumen: string; file_name: string; uploaded_at: string }
+const pending = ref<PendingItem[]>([])
+const pendingError = ref('')
+const pendingLoading = ref(false)
+const verifyEmployee = ref('')
+async function fetchPending() {
+ pendingLoading.value = true; pendingError.value = ''
+ try { const res = await api.get('/admin/berkas/pending'); pending.value = res.data.data || [] }
+ catch { pendingError.value = 'Antrean verifikasi gagal dimuat. Coba muat ulang.' }
+ finally { pendingLoading.value = false }
+}
+function verifyPending(item: PendingItem) {
+ openVerifyModal({berkas_id:item.id,nama_dokumen:item.nama_dokumen,uploaded_at:item.uploaded_at} as EBerkasItem)
+ verifyEmployee.value = `${item.nama_lengkap} (${item.nip})`
+}
 // Modal Preview Dokumen
 const previewModalOpen = ref(false)
 const previewTitle = ref('')
@@ -23,9 +42,11 @@ const verifyTarget = ref<EBerkasItem | null>(null)
 const verifyStatus = ref<'Disetujui' | 'Ditolak'>('Disetujui')
 const verifyCatatan = ref('')
 const isSubmittingVerify = ref(false)
+const verifyError = ref('')
 
 async function fetchPegawaiList() {
   isLoading.value = true
+  loadError.value = ''
   try {
     const res = await api.get('/admin/pegawai')
     if (res.data.success) {
@@ -35,54 +56,64 @@ async function fetchPegawaiList() {
       }
     }
   } catch (err) {
-    console.error(err)
+    loadError.value = 'Gagal memuat atau memperbarui data. Silakan coba lagi.'
   } finally {
     isLoading.value = false
   }
 }
 
 async function selectPegawai(p: Pegawai) {
+  const requestId = ++selectionRequestId
   selectedPegawai.value = p
-  try {
-    const [bRes, dRes, kRes] = await Promise.all([
-      api.get(`/berkas/${p.nip}`),
-      api.get(`/diklat/${p.nip}`),
-      api.get(`/kinerja/${p.nip}`),
-    ])
-    if (bRes.data.success) berkasList.value = bRes.data.data
-    if (dRes.data.success) diklatList.value = dRes.data.data
-    if (kRes.data.success) kinerjaList.value = kRes.data.data
-  } catch (err) {
-    console.error(err)
-  }
+  berkasList.value = []
+  diklatList.value = []
+  kinerjaList.value = []
+  detailError.value = ''
+  isDetailLoading.value = true
+
+  const nip = encodeURIComponent(p.nip)
+  const results = await Promise.allSettled([
+    api.get(`/berkas/${nip}`),
+    api.get(`/diklat/${nip}`),
+    api.get(`/kinerja/${nip}`),
+  ])
+  if (requestId !== selectionRequestId) return
+
+  const [berkasResult, diklatResult, kinerjaResult] = results
+  if (berkasResult.status === 'fulfilled' && berkasResult.value.data.success) berkasList.value = berkasResult.value.data.data || []
+  if (diklatResult.status === 'fulfilled' && diklatResult.value.data.success) diklatList.value = diklatResult.value.data.data || []
+  if (kinerjaResult.status === 'fulfilled' && kinerjaResult.value.data.success) kinerjaList.value = kinerjaResult.value.data.data || []
+
+  const failed = results.filter(result => result.status === 'rejected').length
+  if (failed) detailError.value = `${failed} bagian data pegawai gagal dimuat. Silakan coba lagi.`
+  isDetailLoading.value = false
 }
 
 function openPreview(item: EBerkasItem) {
   if (!item.berkas_id) return
-  const token = localStorage.getItem('sikapj_token') || ''
   previewTitle.value = `${item.nama_dokumen} – ${selectedPegawai.value?.nama_lengkap}`
   previewFileName.value = item.file_name || ''
-  previewUrl.value = `/api/berkas/preview/${item.berkas_id}?token=${token}`
+  previewUrl.value = `/api/berkas/preview/${item.berkas_id}`
   previewModalOpen.value = true
 }
 
 function openDiklatPreview(d: RiwayatDiklat) {
-  const token = localStorage.getItem('sikapj_token') || ''
   previewTitle.value = `Sertifikat Diklat: ${d.nama_diklat} – ${selectedPegawai.value?.nama_lengkap}`
   previewFileName.value = d.file_name || ''
-  previewUrl.value = `/api/diklat/preview/${d.id}?token=${token}`
+  previewUrl.value = `/api/diklat/preview/${d.id}`
   previewModalOpen.value = true
 }
 
 function openKinerjaPreview(k: ArsipKinerja) {
-  const token = localStorage.getItem('sikapj_token') || ''
   previewTitle.value = `${k.jenis_dokumen} ${k.tahun_periode} – ${selectedPegawai.value?.nama_lengkap}`
   previewFileName.value = k.file_name || ''
-  previewUrl.value = `/api/kinerja/preview/${k.id}?token=${token}`
+  previewUrl.value = `/api/kinerja/preview/${k.id}`
   previewModalOpen.value = true
 }
 
 function openVerifyModal(item: EBerkasItem) {
+  verifyError.value = ''
+  verifyEmployee.value = selectedPegawai.value?.nama_lengkap || ''
   verifyTarget.value = item
   verifyStatus.value = 'Disetujui'
   verifyCatatan.value = ''
@@ -93,15 +124,17 @@ async function submitVerifikasi() {
   isSubmittingVerify.value = true
   try {
     const res = await api.put(`/admin/berkas/verify/${verifyTarget.value.berkas_id}`, {
+      uploaded_at: verifyTarget.value.uploaded_at,
       status_verifikasi: verifyStatus.value,
       catatan_admin: verifyCatatan.value,
     })
-    if (res.data.success && selectedPegawai.value) {
+    if (res.data.success) {
       verifyTarget.value = null
-      await selectPegawai(selectedPegawai.value)
+      await fetchPending()
+      if (selectedPegawai.value) await selectPegawai(selectedPegawai.value)
     }
-  } catch (err) {
-    console.error(err)
+  } catch (err: any) {
+    verifyError.value = err.response?.data?.message || 'Verifikasi gagal. Silakan coba lagi.'
   } finally {
     isSubmittingVerify.value = false
   }
@@ -114,16 +147,28 @@ function formatDate(dateStr: string) {
 
 onMounted(() => {
   fetchPegawaiList()
+  fetchPending()
 })
 </script>
 
 <template>
   <div class="space-y-6">
+    <p v-if="isLoading" role="status">Memuat data...</p>
+    <p v-if="loadError" role="alert" class="p-3 bg-rose-50 text-rose-700 rounded-lg">{{ loadError }}</p>
     <div>
       <h1 class="text-2xl font-bold text-slate-800">Manajemen E-Berkas & Kinerja Pegawai</h1>
       <p class="text-sm text-slate-500">Verifikasi 12 dokumen e-berkas, pantau rekam jejak diklat, dan arsip SKP/PK per pegawai</p>
     </div>
 
+    <section class="bg-white rounded-xl border p-4 space-y-3">
+      <div class="flex justify-between"><h2 class="font-bold">Antrean Verifikasi Semua Pegawai ({{ pending.length }})</h2><button @click="fetchPending" :disabled="pendingLoading">Muat ulang</button></div>
+      <p v-if="pendingLoading" role="status">Memuat antrean...</p><p v-if="pendingError" role="alert" class="text-rose-700">{{ pendingError }}</p>
+      <p v-if="!pendingLoading && !pendingError && !pending.length">Tidak ada berkas menunggu verifikasi.</p>
+      <div v-for="item in pending" :key="item.id" class="border-t pt-2 flex justify-between gap-3 text-sm">
+        <div><b>{{ item.nama_lengkap }}</b> ({{ item.nip }}) — {{ item.nama_dokumen }}<div>{{ item.file_name }} · {{ formatDate(item.uploaded_at) }}</div></div>
+        <div class="flex gap-3"><button @click="openPreview({berkas_id:item.id,nama_dokumen:item.nama_dokumen,file_name:item.file_name} as EBerkasItem)">Lihat</button><button @click="verifyPending(item)">Verifikasi</button></div>
+      </div>
+    </section>
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
       <!-- Kolom Kiri: Daftar Pegawai -->
       <div class="lg:col-span-4 bg-white rounded-xl border border-slate-200 shadow-sm p-4 h-[75vh] flex flex-col">
@@ -155,6 +200,9 @@ onMounted(() => {
               <p class="text-xs text-slate-500">{{ selectedPegawai.nama_jabatan }} • NIP: {{ selectedPegawai.nip }}</p>
             </div>
           </div>
+
+          <div v-if="detailError" class="mb-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">{{ detailError }}</div>
+          <div v-if="isDetailLoading" class="mb-3 text-xs text-slate-500">Memuat dokumen pegawai...</div>
 
           <!-- Nav Tabs Admin -->
           <div class="flex border-b border-slate-100 mb-3 gap-3 text-xs">
@@ -292,8 +340,9 @@ onMounted(() => {
     <!-- Modal Verifikasi Admin -->
     <div v-if="verifyTarget" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
+        <p v-if="verifyError" role="alert" class="text-rose-700">{{ verifyError }}</p>
         <h3 class="text-base font-bold text-slate-800">Verifikasi {{ verifyTarget.nama_dokumen }}</h3>
-        <p class="text-xs text-slate-500">Pegawai: {{ selectedPegawai?.nama_lengkap }}</p>
+        <p class="text-xs text-slate-500">Pegawai: {{ verifyEmployee }}</p>
 
         <div>
           <label class="block text-xs font-semibold text-slate-600 mb-1.5">Keputusan</label>

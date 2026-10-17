@@ -4,10 +4,12 @@ import api from '@/api/axios'
 import { useAuthStore } from '@/stores/auth'
 import type { ArsipKinerja } from '@/types'
 import DokumenViewerModal from '@/components/DokumenViewerModal.vue'
+import { MAX_KINERJA_YEAR, validateKinerjaYear, validateFile } from '@/utils/validation'
 
 const authStore = useAuthStore()
 const kinerjaList = ref<ArsipKinerja[]>([])
 const isLoading = ref(true)
+const loadError = ref('')
 
 // Modal Unggah Kinerja
 const isModalOpen = ref(false)
@@ -27,13 +29,14 @@ const previewFileName = ref('')
 
 async function fetchKinerja() {
   isLoading.value = true
+  loadError.value = ''
   try {
     const nip = authStore.user?.nip
     if (!nip) return
     const res = await api.get(`/kinerja/${nip}`)
     if (res.data.success) kinerjaList.value = res.data.data
   } catch (err) {
-    console.error(err)
+    loadError.value = 'Gagal memuat atau memperbarui data. Silakan coba lagi.'
   } finally {
     isLoading.value = false
   }
@@ -53,7 +56,8 @@ function onFileChange(e: Event) {
 
 async function submitKinerja() {
   if (!kinerjaFile.value) return
-  errorMessage.value = ''
+  errorMessage.value = validateKinerjaYear(form.value.tahun_periode) || validateFile(kinerjaFile.value, 1)
+  if (errorMessage.value) return
   isSaving.value = true
 
   const formData = new FormData()
@@ -62,9 +66,7 @@ async function submitKinerja() {
   formData.append('file', kinerjaFile.value)
 
   try {
-    const res = await api.post('/kinerja/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const res = await api.post('/kinerja/upload', formData)
     if (res.data.success) {
       isModalOpen.value = false
       await fetchKinerja()
@@ -77,10 +79,9 @@ async function submitKinerja() {
 }
 
 function openPreview(k: ArsipKinerja) {
-  const token = localStorage.getItem('sikapj_token') || ''
   previewTitle.value = `${k.jenis_dokumen} Tahun ${k.tahun_periode}`
   previewFileName.value = k.file_name || ''
-  previewUrl.value = `/api/kinerja/preview/${k.id}?token=${token}`
+  previewUrl.value = `/api/kinerja/preview/${k.id}`
   previewModalOpen.value = true
 }
 
@@ -94,6 +95,8 @@ onMounted(fetchKinerja)
 
 <template>
   <div class="space-y-6">
+    <p v-if="isLoading" role="status">Memuat data...</p>
+    <p v-if="loadError" role="alert" class="p-3 bg-rose-50 text-rose-700 rounded-lg">{{ loadError }}</p>
     <!-- Header -->
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
       <div>
@@ -170,17 +173,17 @@ onMounted(fetchKinerja)
             <div>
               <label class="block font-semibold text-slate-600 mb-1">Tahun Periode *</label>
               <input
-                v-model.number="form.tahun_periode" type="number" required min="2000" :max="new Date().getFullYear() + 1"
+                v-model.number="form.tahun_periode" type="number" required min="2000" :max="MAX_KINERJA_YEAR"
                 class="w-full p-2.5 border border-slate-300 rounded-lg outline-none font-mono"
               />
             </div>
           </div>
 
           <div>
-            <label class="block font-semibold text-slate-600 mb-1">File Dokumen PDF (Maks 2 MB) *</label>
+            <label class="block font-semibold text-slate-600 mb-1">File Dokumen PDF / JPG / PNG (Maks 1 MB) *</label>
             <div class="border-2 border-dashed border-slate-200 rounded-xl p-5 text-center hover:border-primary-300 transition-colors">
               <p class="text-slate-400 mb-2 text-xs">Klik untuk memilih atau seret file ke sini</p>
-              <input type="file" accept=".pdf" required @change="onFileChange" class="text-xs text-slate-500" />
+              <input type="file" accept=".pdf,.jpg,.jpeg,.png" required @change="onFileChange" class="text-xs text-slate-500" />
             </div>
           </div>
 

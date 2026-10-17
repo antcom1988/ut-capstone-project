@@ -12,31 +12,52 @@ func CalculateKGBDueDate(tmtKGB, tmtPangkat time.Time) time.Time {
 	if tmtPangkat.After(tmtKGB) {
 		tmtDasar = tmtPangkat
 	}
-	return tmtDasar.AddDate(2, 0, 0)
+	return addCalendar(tmtDasar, 2, 0)
 }
 
 // CalculateKPDueDate menghitung jatuh tempo KP:
 // Jatuh tempo KP = TMT Pangkat Terakhir + 4 Tahun
 func CalculateKPDueDate(tmtPangkat time.Time) time.Time {
-	return tmtPangkat.AddDate(4, 0, 0)
+	return addCalendar(tmtPangkat, 4, 0)
 }
 
 // EvaluateAlertStatus mengevaluasi selisih hari/bulan terhadap ambang batas (N bulan)
 func EvaluateAlertStatus(dueDate time.Time, thresholdMonths int) (status string, diffMonths float64, diffDays int) {
-	now := time.Now()
-	diffDuration := dueDate.Sub(now)
-	diffDays = int(diffDuration.Hours() / 24)
-	diffMonths = float64(diffDays) / 30.4375 // rata-rata hari per bulan
+	return EvaluateAlertStatusAt(time.Now(), dueDate, thresholdMonths)
+}
 
-	if diffDays <= 30 {
-		status = "SEGERA" // 🔴 Sangat mendesak (kurang dari / sama dengan 1 bulan)
-	} else if diffMonths <= float64(thresholdMonths) {
-		status = "DIINGATKAN" // 🟡 Masuk rentang N bulan pengingat
-	} else {
-		status = "AMAN" // 🟢 Masih aman
+// EvaluateAlertStatusAt uses calendar boundaries rather than average month lengths.
+func EvaluateAlertStatusAt(now, dueDate time.Time, thresholdMonths int) (status string, diffMonths float64, diffDays int) {
+	now = dateOnly(now)
+	dueDate = dateOnly(dueDate)
+	diffDays = int(dueDate.Sub(now).Hours() / 24)
+	diffMonths = float64(diffDays) / 30.4375
+	urgentAt := addCalendar(dueDate, 0, -1)
+	warningAt := addCalendar(dueDate, 0, -thresholdMonths)
+	switch {
+	case !now.Before(urgentAt):
+		status = "SEGERA"
+	case !now.Before(warningAt):
+		status = "DIINGATKAN"
+	default:
+		status = "AMAN"
 	}
-
 	return status, diffMonths, diffDays
+}
+
+func dateOnly(t time.Time) time.Time {
+	// Database DATE values are civil dates, not elapsed instants across zones/DST.
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func addCalendar(t time.Time, years, months int) time.Time {
+	targetFirst := time.Date(t.Year()+years, t.Month()+time.Month(months), 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+	lastDay := time.Date(targetFirst.Year(), targetFirst.Month()+1, 0, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location()).Day()
+	day := t.Day()
+	if day > lastDay {
+		day = lastDay
+	}
+	return time.Date(targetFirst.Year(), targetFirst.Month(), day, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
 }
 
 // BuildPegawaiAlertItems membuat daftar AlertItem untuk satu pegawai
